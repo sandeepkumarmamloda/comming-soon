@@ -149,15 +149,69 @@
       background: #f7c9c4;
     }
 
-    /* ---------- Background video ---------- */
-    .bg-video {
+    /* ---------- Background (from second.html) ---------- */
+    /* Put bg.jpg next to this file (or change the path below) */
+    :root {
+      --bg: url("bg.jpg");
+      --ease: cubic-bezier(.16,1,.3,1);
+    }
+
+    .sky {
+      position: fixed;
+      inset: -6%;
+      z-index: 0;
+      will-change: transform;
+      background: var(--bg) center/cover no-repeat,
+        linear-gradient(180deg,#8fc1ee 0%,#cfe0f5 28%,#fde3d0 62%,#f6b9b4 100%);
+      animation: kenburns 2.8s var(--ease) both;
+    }
+    @keyframes kenburns {
+      from { transform: scale(1.18); filter: blur(14px) brightness(1.25); }
+      to   { transform: scale(1);    filter: none; }
+    }
+
+    .rays {
+      position: fixed;
+      left: 24%;
+      top: 46%;
+      width: 160vmax;
+      height: 160vmax;
+      margin: -80vmax 0 0 -80vmax;
+      z-index: 0;
+      pointer-events: none;
+      background: repeating-conic-gradient(from 0deg, rgba(255,244,214,.16) 0 4deg, transparent 4deg 14deg);
+      -webkit-mask: radial-gradient(circle,#000 0,transparent 42%);
+      mask: radial-gradient(circle,#000 0,transparent 42%);
+      mix-blend-mode: soft-light;
+      animation: spin 90s linear infinite, fadein 3s 1s both;
+    }
+    @keyframes spin { to { transform: rotate(360deg); } }
+    @keyframes fadein { from { opacity: 0; } to { opacity: 1; } }
+
+    .glow {
+      position: fixed;
+      left: 24%;
+      top: 46%;
+      width: 34vmax;
+      height: 34vmax;
+      margin: -17vmax 0 0 -17vmax;
+      z-index: 0;
+      pointer-events: none;
+      border-radius: 50%;
+      background: radial-gradient(circle, rgba(255,236,170,.7), rgba(255,236,170,0) 65%);
+      mix-blend-mode: screen;
+      animation: breathe 6s ease-in-out infinite, fadein 2.4s .6s both;
+    }
+    @keyframes breathe { 50% { transform: scale(1.18); opacity: .65; } }
+
+    /* FX canvas (petals, bubbles, sparkles): above sky/rays/glow, below page content */
+    #fx {
       position: fixed;
       inset: 0;
       width: 100%;
-      height: 100vh;
-      height: 100svh;
-      object-fit: cover;
+      height: 100%;
       z-index: 0;
+      pointer-events: none; /* links stay clickable; mouse is read from window */
     }
 
     /* ---------- Layout ---------- */
@@ -346,25 +400,21 @@
         font-size: 10px;
       }
     }
+
+    /* Calm the background for users who prefer reduced motion */
+    @media (prefers-reduced-motion: reduce) {
+      .sky, .rays, .glow { animation-duration: .01ms !important; animation-delay: 0s !important; animation-iteration-count: 1 !important; }
+      #fx { display: none; }
+    }
   </style>
 </head>
 
 <body>
-  <!-- Background video -->
-  <video
-  class="bg-video"
-  autoplay
-  muted
-  loop
-  playsinline
-  preload="auto"
-  poster="poster.jpg"
-  aria-hidden="true"
-  disablepictureinpicture
->
-  <source src="video.webm" type="video/webm">
-  <source src="video.mp4" type="video/mp4">
-</video>
+  <!-- Background (from second.html) -->
+  <div class="sky" id="sky"></div>
+  <div class="rays"></div>
+  <div class="glow"></div>
+  <canvas id="fx" aria-hidden="true"></canvas>
 
   <main class="page">
 
@@ -421,5 +471,206 @@
     </footer>
 
   </main>
+
+  <!-- Background FX script (from second.html: petals, bubbles, sparkles, sky parallax) -->
+  <script>
+  (() => {
+    const reduce = matchMedia('(prefers-reduced-motion: reduce)').matches;
+    if (reduce) return;
+
+    const cv = document.getElementById('fx'), ctx = cv.getContext('2d');
+    let W, H, DPR;
+    const resize = () => {
+      DPR = Math.min(devicePixelRatio || 1, 2);
+      W = innerWidth; H = innerHeight;
+      cv.width = W * DPR; cv.height = H * DPR; ctx.setTransform(DPR, 0, 0, DPR, 0, 0);
+    };
+    addEventListener('resize', resize); resize();
+
+    /* ---- Pointer state ---- */
+    const m = { x: W / 2, y: H / 2, vx: 0, vy: 0, nx: 0, ny: 0, sx: 0, sy: 0, active: false };
+    addEventListener('pointermove', e => {
+      const wasActive = m.active;
+      const prevX = m.x, prevY = m.y;
+      m.active = true;
+      m.vx = e.clientX - m.x; m.vy = e.clientY - m.y;
+      m.x = e.clientX; m.y = e.clientY;
+      m.nx = (m.x / W - .5) * 2; m.ny = (m.y / H - .5) * 2;
+      if (Math.hypot(m.vx, m.vy) > 6) sparkle(m.x, m.y);
+
+      // check the whole path from the old to the new cursor position,
+      // so even a fast swipe through a bubble pops it
+      if (wasActive) popAlong(prevX, prevY, m.x, m.y);
+    });
+    // when cursor leaves the page, stop popping from a stale position
+    document.documentElement.addEventListener('pointerleave', () => { m.active = false; });
+
+    /* ---- Petals: pseudo-3D (flip via cos), depth parallax, wind from cursor ---- */
+    const rnd = (a, b) => a + Math.random() * (b - a);
+    const clamp = (v, lim) => Math.max(-lim, Math.min(lim, v));
+    const petals = Array.from({ length: Math.round(Math.min(46, W / 36)) }, () => mkPetal(true));
+    function mkPetal(init) {
+      const z = rnd(.45, 1.25);
+      return { x: rnd(-50, W + 50), y: init ? rnd(-H, H) : rnd(-160, -30), z,
+        s: rnd(9, 17) * z, r: rnd(0, 6.28), rs: rnd(-.02, .02), f: rnd(0, 6.28), fs: rnd(.012, .03),
+        vy: rnd(.45, 1.1) * z, sw: rnd(.4, 1.2), sf: rnd(.004, .012), t: rnd(0, 100),
+        // extra physics -> push (vx, ey), extra spin (rv), extra flutter (fv)
+        vx: 0, ey: 0, rv: 0, fv: 0,
+        c: Math.random() < .5 ? ['#ffb8cf', '#ff8fb3'] : ['#ffd1dc', '#f7a3b8'] };
+    }
+    function drawPetal(p) {
+      const flip = Math.cos(p.f);
+      ctx.save(); ctx.translate(p.x, p.y); ctx.rotate(p.r); ctx.scale(1, .35 + Math.abs(flip) * .65);
+      ctx.globalAlpha = Math.min(1, .55 + p.z * .35);
+      const g = ctx.createLinearGradient(0, -p.s, 0, p.s); g.addColorStop(0, p.c[0]); g.addColorStop(1, p.c[1]);
+      ctx.fillStyle = g; ctx.beginPath();
+      ctx.moveTo(0, -p.s);
+      ctx.bezierCurveTo(p.s * .95, -p.s * .55, p.s * .8, p.s * .7, 0, p.s);
+      ctx.bezierCurveTo(-p.s * .8, p.s * .7, -p.s * .95, -p.s * .55, 0, -p.s);
+      ctx.fill(); ctx.restore();
+    }
+
+    /* ---- Soap bubbles: iridescent, rise + wobble, pop on touch ---- */
+    const bubbles = Array.from({ length: 8 }, () => mkBubble(true));
+    function mkBubble(init) {
+      return { x: rnd(0, W), y: init ? rnd(0, H) : H + rnd(40, 160), r: rnd(16, 52), vy: rnd(.25, .65), t: rnd(0, 100), h: rnd(0, 360) };
+    }
+    function drawBubble(b) {
+      const { x, y, r } = b, h = b.h;
+      const g = ctx.createRadialGradient(x - r * .3, y - r * .3, r * .1, x, y, r);
+      g.addColorStop(0, 'rgba(255,255,255,.06)'); g.addColorStop(.72, 'rgba(255,255,255,.08)');
+      g.addColorStop(.9, `hsla(${h},90%,82%,.35)`); g.addColorStop(1, `hsla(${h + 90},90%,85%,.6)`);
+      ctx.fillStyle = g; ctx.beginPath(); ctx.arc(x, y, r, 0, 6.283); ctx.fill();
+      ctx.strokeStyle = `hsla(${h + 180},90%,88%,.55)`; ctx.lineWidth = 1.2; ctx.stroke();
+      ctx.fillStyle = 'rgba(255,255,255,.75)'; ctx.beginPath();
+      ctx.ellipse(x - r * .4, y - r * .45, r * .22, r * .11, -.7, 0, 6.283); ctx.fill();
+    }
+    const pops = [];
+    function pop(b) {
+      for (let i = 0; i < 14; i++) { const a = i / 14 * 6.283; pops.push({ x: b.x, y: b.y, vx: Math.cos(a) * rnd(1, 3), vy: Math.sin(a) * rnd(1, 3), l: 1, h: b.h }); }
+      pops.push({ ring: true, x: b.x, y: b.y, r: b.r, l: 1 });
+      Object.assign(b, mkBubble(false));
+    }
+    const hit = (x, y) => { for (const b of bubbles) if (Math.hypot(b.x - x, b.y - y) < b.r) { pop(b); return true; } };
+    addEventListener('pointerdown', e => { hit(e.clientX, e.clientY); burst(e.clientX, e.clientY); });
+
+    // shortest distance from point (cx,cy) to the segment (ax,ay)-(bx,by)
+    function segDist(ax, ay, bx, by, cx, cy) {
+      const dx = bx - ax, dy = by - ay, len2 = dx * dx + dy * dy;
+      const t = len2 ? Math.max(0, Math.min(1, ((cx - ax) * dx + (cy - ay) * dy) / len2)) : 0;
+      return Math.hypot(cx - (ax + t * dx), cy - (ay + t * dy));
+    }
+    // pop every bubble the cursor path touched
+    function popAlong(ax, ay, bx, by) {
+      for (const b of bubbles) if (segDist(ax, ay, bx, by, b.x, b.y) < b.r) pop(b);
+    }
+
+    /* ---- Cursor sparkles ---- */
+    const sparks = [];
+    function sparkle(x, y) {
+      if (sparks.length > 60) return;
+      sparks.push({ x: x + rnd(-8, 8), y: y + rnd(-8, 8), vx: rnd(-.4, .4), vy: rnd(.2, .9), s: rnd(5, 11), l: 1, r: rnd(0, 3) });
+    }
+    function burst(x, y) { for (let i = 0; i < 12; i++) sparks.push({ x, y, vx: rnd(-3, 3), vy: rnd(-3, 3), s: rnd(6, 13), l: 1, r: rnd(0, 3) }); }
+    function star(x, y, s, rot) {
+      ctx.save(); ctx.translate(x, y); ctx.rotate(rot); ctx.beginPath();
+      for (let i = 0; i < 4; i++) { const a = i * Math.PI / 2; ctx.lineTo(Math.cos(a) * s, Math.sin(a) * s); ctx.lineTo(Math.cos(a + .785) * s * .22, Math.sin(a + .785) * s * .22); }
+      ctx.closePath(); ctx.fill(); ctx.restore();
+    }
+
+    /* ---- Sky parallax target ---- */
+    const sky = document.getElementById('sky');
+
+    let last = performance.now(), run = true;
+    document.addEventListener('visibilitychange', () => { run = !document.hidden; last = performance.now(); if (run) frame(last); });
+
+    function frame(now) {
+      if (!run) return;
+      const dt = Math.min((now - last) / 16.67, 3); last = now;
+      ctx.clearRect(0, 0, W, H);
+
+      // smooth sky parallax
+      m.sx += (m.nx - m.sx) * .06; m.sy += (m.ny - m.sy) * .06;
+      sky.style.translate = `${-m.sx * 18}px ${-m.sy * 12}px`;
+
+      // bubbles
+      for (const b of bubbles) {
+        b.t += .012 * dt; b.y -= b.vy * dt; b.x += Math.sin(b.t * 2) * .4 * dt; b.h += .3 * dt;
+
+        // bubble keeps floating, and pops the moment the cursor is over it
+        if (m.active && Math.hypot(b.x - m.x, b.y - m.y) < b.r) { pop(b); continue; }
+
+        if (b.y < -b.r * 2) Object.assign(b, mkBubble(false));
+        drawBubble(b);
+      }
+
+      // petals
+      const R = 200; // reaction radius around the cursor
+      for (const p of petals) {
+        p.t += dt;
+
+        const dx = p.x - m.x, dy = p.y - m.y, d = Math.hypot(dx, dy) || 1;
+        if (m.active && d < R) {
+          const f = 1 - d / R;                 // 1 near cursor -> 0 at the edge
+          const k = f * f * (.5 + p.z * .5);   // closer + nearer-to-viewer petals react more
+          const nx = dx / d, ny = dy / d;
+
+          // 1) pushed away from the cursor
+          p.vx += nx * k * 1.8;
+          p.ey += ny * k * 1.8;
+          // 2) swirl around the cursor (perpendicular)
+          p.vx += -ny * k * .7;
+          p.ey +=  nx * k * .7;
+          // 3) dragged along with the cursor's movement (wind)
+          p.vx += m.vx * .05 * f;
+          p.ey += m.vy * .05 * f;
+          // 4) spins faster and flutters more
+          p.rv += (nx * .1 + (Math.random() - .5) * .08) * k * 2;
+          p.fv += k * .3;
+        }
+
+        // limit speeds so nothing flies off crazy
+        p.vx = clamp(p.vx, 14); p.ey = clamp(p.ey, 14);
+        p.rv = clamp(p.rv, .45); p.fv = clamp(p.fv, .5);
+
+        // smooth fade-back to the normal gentle fall
+        const damp = k => Math.pow(k, dt);
+        p.vx *= damp(.94); p.ey *= damp(.94); p.rv *= damp(.95); p.fv *= damp(.93);
+
+        p.f += (p.fs + p.fv) * dt;
+        p.r += (p.rs + p.rv) * dt;
+        p.x += (Math.sin(p.t * p.sf * 6) * p.sw + .35) * p.z * dt + p.vx * dt;
+        p.y += p.vy * dt + p.ey * dt;
+
+        if (p.y > H + 40 || p.y < -320 || p.x > W + 80 || p.x < -120) Object.assign(p, mkPetal(false));
+        drawPetal(p);
+      }
+
+      // pops
+      ctx.globalAlpha = 1;
+      for (let i = pops.length - 1; i >= 0; i--) {
+        const q = pops[i]; q.l -= .035 * dt;
+        if (q.l <= 0) { pops.splice(i, 1); continue; }
+        if (q.ring) { ctx.strokeStyle = `rgba(255,255,255,${q.l * .8})`; ctx.lineWidth = 2; ctx.beginPath(); ctx.arc(q.x, q.y, q.r * (1.6 - q.l * .6), 0, 6.283); ctx.stroke(); }
+        else { q.x += q.vx * dt; q.y += q.vy * dt; ctx.fillStyle = `hsla(${q.h + 120},100%,88%,${q.l})`; ctx.beginPath(); ctx.arc(q.x, q.y, 2.2 * q.l + .4, 0, 6.283); ctx.fill(); }
+      }
+
+      // sparkles
+      ctx.shadowColor = 'rgba(255,255,255,.9)'; ctx.shadowBlur = 8;
+      for (let i = sparks.length - 1; i >= 0; i--) {
+        const s = sparks[i]; s.l -= .028 * dt;
+        if (s.l <= 0) { sparks.splice(i, 1); continue; }
+        s.x += s.vx * dt; s.y += s.vy * dt; s.r += .05 * dt;
+        ctx.fillStyle = `rgba(255,${200 + s.l * 40 | 0},${225 + s.l * 20 | 0},${s.l})`;
+        star(s.x, s.y, s.s * s.l + 1, s.r);
+      }
+      ctx.shadowBlur = 0;
+
+      m.vx *= .8; m.vy *= .8;
+      requestAnimationFrame(frame);
+    }
+    requestAnimationFrame(frame);
+  })();
+  </script>
 </body>
 </html>
